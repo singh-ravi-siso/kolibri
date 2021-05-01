@@ -54,7 +54,7 @@ An example Vue component would then look like this
       name: 'someComponent',
       mounted() {
         // prints 'Hello world' to console
-        console.log((this.$trs('helloWorld'));
+        console.log(this.$trs('helloWorld'));
       },
       $trs: {
         helloWorld: 'Hello world',
@@ -239,6 +239,7 @@ See the `Perseus plugin development guide <https://github.com/learningequality/k
 
 When uploading or downloading strings, ensure that your Perseus repo is in a clean checkout state with the correct Perseus branch.
 
+.. _crowdin_upload:
 
 Extracting and uploading sources
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

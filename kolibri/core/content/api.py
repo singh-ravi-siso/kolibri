@@ -356,11 +356,25 @@ class ContentNodeViewset(ValuesViewset):
                 "id", "title", "lft", "rght", "tree_id"
             )
 
+            tags = {}
+
+            for t in models.ContentTag.objects.filter(
+                tagged_content__in=queryset
+            ).values(
+                "tag_name",
+                "tagged_content",
+            ):
+                if t["tagged_content"] not in tags:
+                    tags[t["tagged_content"]] = [t["tag_name"]]
+                else:
+                    tags[t["tagged_content"]].append(t["tag_name"])
+
             for item in items:
                 item["assessmentmetadata"] = assessmentmetadata.get(item["id"])
                 item["files"] = list(
                     map(lambda x: map_file(x, item), files.get(item["id"], []))
                 )
+                item["tags"] = tags.get(item["id"], [])
 
                 lft = item.pop("lft")
                 rght = item.pop("rght")
@@ -373,6 +387,7 @@ class ContentNodeViewset(ValuesViewset):
                         ancestors,
                     )
                 )
+                item["is_leaf"] = item.get("kind") != content_kinds.TOPIC
                 output.append(item)
         return output
 
@@ -399,6 +414,7 @@ class ContentNodeViewset(ValuesViewset):
 
             def copy_node(new_node):
                 new_node["ancestor_id"] = node.id
+                new_node["is_leaf"] = new_node.get("kind") != content_kinds.TOPIC
                 return new_node
 
             node_data = node.get_descendants().filter(available=True)
@@ -516,10 +532,16 @@ class ContentNodeViewset(ValuesViewset):
                     "id": next_item.id,
                     "title": next_item.title,
                     "thumbnail": thumbnails[0]["storage_url"],
+                    "is_leaf": next_item.kind != content_kinds.TOPIC,
                 }
             )
         return Response(
-            {"kind": next_item.kind, "id": next_item.id, "title": next_item.title}
+            {
+                "kind": next_item.kind,
+                "id": next_item.id,
+                "title": next_item.title,
+                "is_leaf": next_item.kind != content_kinds.TOPIC,
+            }
         )
 
     @detail_route(methods=["get"])
@@ -957,7 +979,7 @@ class RemoteChannelViewSet(viewsets.ViewSet):
         # map the channel list into the format the Kolibri client-side expects
         channels = list(map(self._studio_response_to_kolibri_response, resp.json()))
 
-        return Response(channels)
+        return channels
 
     @staticmethod
     def _get_lang_native_name(code):
@@ -1016,9 +1038,10 @@ class RemoteChannelViewSet(viewsets.ViewSet):
         baseurl = request.GET.get("baseurl", None)
         keyword = request.GET.get("keyword", None)
         language = request.GET.get("language", None)
-        return self._make_channel_endpoint_request(
+        channels = self._make_channel_endpoint_request(
             baseurl=baseurl, keyword=keyword, language=language
         )
+        return Response(channels)
 
     def retrieve(self, request, pk=None):
         """
@@ -1027,9 +1050,12 @@ class RemoteChannelViewSet(viewsets.ViewSet):
         baseurl = request.GET.get("baseurl", None)
         keyword = request.GET.get("keyword", None)
         language = request.GET.get("language", None)
-        return self._make_channel_endpoint_request(
+        channels = self._make_channel_endpoint_request(
             identifier=pk, baseurl=baseurl, keyword=keyword, language=language
         )
+        if not channels:
+            raise Http404
+        return Response(channels[0])
 
     @list_route(methods=["get"])
     def kolibri_studio_status(self, request, **kwargs):

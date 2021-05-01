@@ -4,6 +4,13 @@ export const events = {
   IFRAMEREADY: 'iframeready',
   STATEUPDATE: 'stateupdate',
   USERDATAUPDATE: 'userdataupdate',
+  DATAREQUESTED: 'datarequested',
+  COLLECTIONREQUESTED: 'collectionrequested',
+  MODELREQUESTED: 'modelrequested',
+  DATARETURNED: 'datareturned',
+  KOLIBRIDATARETURNED: 'kolibridatareturned',
+  NAVIGATETO: 'navigateto',
+  CONTEXT: 'context',
 };
 
 export const nameSpace = 'hashi';

@@ -163,6 +163,18 @@ class LearnerGroupAPITestCase(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data[0]["id"], error_constants.UNIQUE)
 
+    def test_cannot_create_learnergroup_no_classroom_parent(self):
+        classroom_id = self.classrooms[0].id
+        learner_group_id = (
+            models.LearnerGroup.objects.filter(parent_id=classroom_id).first().id
+        )
+        response = self.client.post(
+            reverse("kolibri:core:learnergroup-list"),
+            {"parent": learner_group_id, "name": "some name"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
 
 class ClassroomAPITestCase(APITestCase):
     @classmethod
@@ -236,7 +248,15 @@ class ClassroomAPITestCase(APITestCase):
                     "is_superuser": True,
                     "full_name": self.superuser.full_name,
                     "username": self.superuser.username,
-                    "roles": [],
+                    "roles": [
+                        {
+                            "collection": self.facility.id,
+                            "kind": role_kinds.ASSIGNABLE_COACH,
+                            "id": self.superuser.roles.get(
+                                collection=self.facility.id
+                            ).id,
+                        }
+                    ],
                 }
             ],
         }
@@ -285,6 +305,15 @@ class ClassroomAPITestCase(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data[0]["id"], error_constants.UNIQUE)
+
+    def test_cannot_create_classroom_no_facility_parent(self):
+        classroom_id = self.classrooms[0].id
+        response = self.client.post(
+            reverse("kolibri:core:classroom-list"),
+            {"parent": classroom_id, "name": "another name"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class FacilityAPITestCase(APITestCase):
@@ -987,6 +1016,64 @@ class FacilityDatasetAPITestCase(APITestCase):
             response = post_resetsettings()
             self.assertDictContainsSubset(mappings[setting], response.data)
 
+    def test_for_incompatible_settings_together(self):
+        self.client.login(username=self.admin.username, password=DUMMY_PASSWORD)
+        response = self.client.patch(
+            reverse(
+                "kolibri:core:facilitydataset-detail",
+                kwargs={"pk": self.facility.dataset_id},
+            ),
+            {
+                "learner_can_login_with_no_password": "true",
+                "learner_can_edit_password": "true",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_for_incompatible_settings_sequentially(self):
+        self.client.login(username=self.admin.username, password=DUMMY_PASSWORD)
+        response = self.client.patch(
+            reverse(
+                "kolibri:core:facilitydataset-detail",
+                kwargs={"pk": self.facility.dataset_id},
+            ),
+            {
+                "learner_can_edit_password": "true",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.patch(
+            reverse(
+                "kolibri:core:facilitydataset-detail",
+                kwargs={"pk": self.facility.dataset_id},
+            ),
+            {
+                "learner_can_login_with_no_password": "true",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_for_incompatible_settings_only_one(self):
+        # Test case handles the case when only `learner_can_login_with_no_password`
+        # is set to true in the patch request while `learner_can_edit_password`
+        # already being true due to it's default value
+        self.client.login(username=self.admin.username, password=DUMMY_PASSWORD)
+        response = self.client.patch(
+            reverse(
+                "kolibri:core:facilitydataset-detail",
+                kwargs={"pk": self.facility.dataset_id},
+            ),
+            {
+                "learner_can_login_with_no_password": "true",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
 
 class MembershipCascadeDeletion(APITestCase):
     @classmethod
@@ -1101,3 +1188,48 @@ class GroupMembership(APITestCase):
             url, {"user": self.user.id, "collection": self.classroom2.id}, format="json"
         )
         self.assertEqual(response.status_code, 201)
+
+    def test_create_group_membership_no_class_membership(self):
+        self.classroom1_membership.delete()
+        url = reverse("kolibri:core:membership-list")
+        response = self.client.post(
+            url, {"user": self.user.id, "collection": self.lg11.id}, format="json"
+        )
+        self.assertEqual(response.status_code, 400)
+
+
+class DuplicateUsernameTestCase(APITestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.facility = FacilityFactory.create()
+        cls.user = FacilityUserFactory.create(facility=cls.facility, username="user")
+        cls.url = reverse("kolibri:core:usernameexists")
+        provision_device()
+
+    def test_check_duplicate_username_with_unique_username(self):
+        response = self.client.get(
+            self.url,
+            {"username": "new_user", "facility": self.facility.id},
+            format="json",
+        )
+        expected = {"username_exists": False}
+        self.assertDictEqual(response.data, expected)
+
+    def test_check_duplicate_username_with_existing_username(self):
+        response = self.client.get(
+            self.url,
+            {"username": self.user.username, "facility": self.facility.id},
+            format="json",
+        )
+        expected = {"username_exists": True}
+        self.assertDictEqual(response.data, expected)
+
+    def test_check_duplicate_username_with_existing_username_other_facility(self):
+        other_facility = FacilityFactory.create()
+        response = self.client.get(
+            self.url,
+            {"username": self.user.username, "facility": other_facility.id},
+            format="json",
+        )
+        expected = {"username_exists": False}
+        self.assertDictEqual(response.data, expected)

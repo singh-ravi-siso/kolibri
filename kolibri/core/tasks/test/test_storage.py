@@ -1,12 +1,10 @@
-import tempfile
-
+# -*- coding: utf-8 -*-
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.pool import NullPool
 
 from kolibri.core.tasks.job import Job
 from kolibri.core.tasks.job import State
 from kolibri.core.tasks.storage import Storage
+from kolibri.core.tasks.test.base import connection
 from kolibri.core.tasks.utils import stringify_func
 
 
@@ -15,15 +13,11 @@ QUEUE = "pytest"
 
 @pytest.fixture
 def defaultbackend():
-    with tempfile.NamedTemporaryFile() as f:
-        connection = create_engine(
-            "sqlite:///{path}".format(path=f.name),
-            connect_args={"check_same_thread": False},
-            poolclass=NullPool,
-        )
-        b = Storage(connection)
+    with connection() as c:
+        b = Storage(c)
+        b.clear(force=True)
         yield b
-        b.clear()
+        b.clear(force=True)
 
 
 @pytest.fixture
@@ -31,6 +25,7 @@ def simplejob():
     return Job(id)
 
 
+@pytest.mark.django_db
 class TestBackend:
     def test_can_enqueue_single_job(self, defaultbackend, simplejob):
         job_id = defaultbackend.enqueue_job(simplejob, QUEUE)

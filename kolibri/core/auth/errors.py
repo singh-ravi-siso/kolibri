@@ -1,15 +1,12 @@
 from kolibri.core.errors import KolibriError
+from kolibri.core.errors import KolibriValidationError
 
 
-class InvalidRoleKind(KolibriError):
+class InvalidRoleKind(KolibriValidationError):
     pass
 
 
 class UserDoesNotHaveRoleError(KolibriError):
-    pass
-
-
-class UserHasRoleOnlyIndirectlyThroughHierarchyError(KolibriError):
     pass
 
 
@@ -21,9 +18,13 @@ class UserIsNotMemberError(KolibriError):
     pass
 
 
-class UserIsMemberOnlyIndirectlyThroughHierarchyError(KolibriError):
+class IncompatibleDeviceSettingError(KolibriError):
     pass
 
 
-class InvalidHierarchyRelationsArgument(KolibriError):
+class InvalidMembershipError(KolibriValidationError):
+    pass
+
+
+class InvalidCollectionHierarchy(KolibriValidationError):
     pass

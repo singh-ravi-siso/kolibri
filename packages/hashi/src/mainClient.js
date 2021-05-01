@@ -3,6 +3,7 @@ import LocalStorage from './localStorage';
 import Cookie from './cookie';
 import SCORM from './SCORM';
 import { events, nameSpace } from './hashiBase';
+import Kolibri from './kolibri';
 
 /*
  * This is the main entry point for interacting with the Hashi library.
@@ -22,6 +23,7 @@ export default class MainClient {
       cookie: new Cookie(this.mediator),
       SCORM: new SCORM(this.mediator),
     };
+    this.kolibri = new Kolibri(this.mediator);
     this.now = now;
     this.ready = false;
     this.contentNamespace = null;
@@ -59,6 +61,37 @@ export default class MainClient {
       });
     });
     this.mediator.sendMessage({ nameSpace, event: events.READYCHECK, data: true });
+
+    // This group of functions and events is for the custom channels work
+    // They each fetch data from the kolibri database and return it to
+    // the iframe
+    this.on(this.events.DATAREQUESTED, message => {
+      if (message.dataType === 'Collection') {
+        this.mediator.sendLocalMessage({
+          nameSpace,
+          event: events.COLLECTIONREQUESTED,
+          data: message,
+        });
+      } else if (message.dataType === 'Model') {
+        this.mediator.sendLocalMessage({
+          nameSpace,
+          event: events.MODELREQUESTED,
+          data: message,
+        });
+      }
+    });
+
+    this.on(this.events.KOLIBRIDATARETURNED, message => {
+      this.mediator.sendMessage({ nameSpace, event: events.DATARETURNED, data: message });
+    });
+
+    this.on(this.events.NAVIGATETO, message => {
+      this.mediator.sendMessage({ nameSpace, event: events.NAVIGATETO, data: message });
+    });
+
+    this.on(this.events.CONTEXT, message => {
+      this.mediator.sendMessage({ nameSpace, event: events.CONTEXT, data: message });
+    });
   }
 
   updateData({ contentState, userData }) {
@@ -104,6 +137,7 @@ export default class MainClient {
       });
     });
   }
+
   get data() {
     const data = {};
     Object.keys(this.storage).forEach(key => {
@@ -114,6 +148,7 @@ export default class MainClient {
     });
     return data;
   }
+
   on(event, callback) {
     if (!Object.values(events).includes(event)) {
       throw ReferenceError(`${event} is not a valid event name for ${nameSpace}`);

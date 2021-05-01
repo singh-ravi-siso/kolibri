@@ -2,12 +2,16 @@ from __future__ import absolute_import
 from __future__ import print_function
 from __future__ import unicode_literals
 
+import uuid
+
 from django.core.urlresolvers import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from .. import models
 from kolibri.core import error_constants
+from kolibri.core.auth.models import AdHocGroup
+from kolibri.core.auth.models import Classroom
 from kolibri.core.auth.models import Facility
 from kolibri.core.auth.models import FacilityUser
 from kolibri.core.auth.models import LearnerGroup
@@ -27,11 +31,12 @@ class ExamAPITestCase(APITestCase):
         cls.admin.set_password(DUMMY_PASSWORD)
         cls.admin.save()
         cls.facility.add_admin(cls.admin)
+        cls.classroom = Classroom.objects.create(name="Classroom", parent=cls.facility)
         cls.exam = models.Exam.objects.create(
             title="title",
             question_count=1,
             active=True,
-            collection=cls.facility,
+            collection=cls.classroom,
             creator=cls.admin,
         )
 
@@ -40,7 +45,7 @@ class ExamAPITestCase(APITestCase):
             "title": "Exam",
             "question_count": 1,
             "active": True,
-            "collection": self.facility.id,
+            "collection": self.classroom.id,
             "learners_see_fixed_order": False,
             "question_sources": [],
             "assignments": [],
@@ -99,6 +104,37 @@ class ExamAPITestCase(APITestCase):
             models.Exam.objects.get(id=exam_id),
         )
 
+    def test_logged_in_admin_exam_create_with_learner_assignments(self):
+        self.login_as_admin()
+        exam = self.make_basic_exam()
+        user = FacilityUser.objects.create(username="u", facility=self.facility)
+
+        self.classroom.add_member(user)
+        exam["learner_ids"] = [user.id]
+        response = self.post_new_exam(exam)
+        exam_id = response.data["id"]
+        self.assertEqual(response.status_code, 201)
+        adhoc_group = AdHocGroup.objects.get(parent=self.classroom)
+        self.assertEqual(len(adhoc_group.get_members()), 1)
+        self.assertEqual(adhoc_group.get_members()[0], user)
+        self.assertEqual(
+            models.ExamAssignment.objects.get(collection=adhoc_group).exam,
+            models.Exam.objects.get(id=exam_id),
+        )
+
+    def test_logged_in_admin_exam_create_with_learner_assignments_for_wrong_collection(
+        self,
+    ):
+        self.login_as_admin()
+        exam = self.make_basic_exam()
+        user = FacilityUser.objects.create(username="u", facility=self.facility)
+
+        exam["learner_ids"] = [user.id]
+        response = self.post_new_exam(exam)
+        self.assertEqual(response.status_code, 400)
+        with self.assertRaises(AdHocGroup.DoesNotExist):
+            AdHocGroup.objects.get(parent=self.classroom)
+
     def test_logged_in_admin_exam_update_no_assignments(self):
         self.login_as_admin()
         exam = self.make_basic_exam()
@@ -116,7 +152,7 @@ class ExamAPITestCase(APITestCase):
         exam["assignments"] = [self.facility.id]
         post_response = self.post_new_exam(exam)
         exam_id = post_response.data["id"]
-        group = LearnerGroup.objects.create(name="test", parent=self.facility)
+        group = LearnerGroup.objects.create(name="test", parent=self.classroom)
         exam["assignments"] = [group.id]
         put_response = self.put_updated_exam(exam_id, exam)
         self.assertEqual(put_response.status_code, 200)
@@ -130,7 +166,7 @@ class ExamAPITestCase(APITestCase):
         exam["assignments"] = [self.facility.id]
         post_response = self.post_new_exam(exam)
         exam_id = post_response.data["id"]
-        group = LearnerGroup.objects.create(name="test", parent=self.facility)
+        group = LearnerGroup.objects.create(name="test", parent=self.classroom)
         exam["assignments"].append(group.id)
         put_response = self.put_updated_exam(exam_id, exam)
         self.assertEqual(put_response.status_code, 200)
@@ -156,7 +192,7 @@ class ExamAPITestCase(APITestCase):
 
     def test_close_exam_logs_when_exam_is_closed(self):
         self.login_as_admin()
-        group = LearnerGroup.objects.create(name="test", parent=self.facility)
+        group = LearnerGroup.objects.create(name="test", parent=self.classroom)
 
         import datetime
 
@@ -165,6 +201,8 @@ class ExamAPITestCase(APITestCase):
             user = FacilityUser.objects.create(
                 username="u{}".format(i), facility=self.facility
             )
+
+            self.classroom.add_member(user)
 
             # Add the user to the learner group
             group.add_learner(user)
@@ -217,8 +255,8 @@ class ExamAPITestCase(APITestCase):
         exam["title"] = title
         exam["question_sources"].append(
             {
-                "exercise_id": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
-                "question_id": "q1",
+                "exercise_id": uuid.uuid4().hex,
+                "question_id": uuid.uuid4().hex,
                 "title": "Title",
                 # missing 'counter_in_exercise'
             }
@@ -233,6 +271,20 @@ class ExamAPITestCase(APITestCase):
         exam["question_sources"].append(
             {
                 "exercise_id": "e1",
+                "question_id": uuid.uuid4().hex,
+                "title": "Title",
+                "counter_in_exercise": 1,
+            }
+        )
+        response = self.post_new_exam(exam)
+        self.assertEqual(response.status_code, 400)
+
+    def test_exam_with_invalid_question_id(self):
+        self.login_as_admin()
+        exam = self.make_basic_exam()
+        exam["question_sources"].append(
+            {
+                "exercise_id": uuid.uuid4().hex,
                 "question_id": "q1",
                 "title": "Title",
                 "counter_in_exercise": 1,
@@ -241,13 +293,26 @@ class ExamAPITestCase(APITestCase):
         response = self.post_new_exam(exam)
         self.assertEqual(response.status_code, 400)
 
+    def test_exam_with_no_question_id_succeeds(self):
+        self.login_as_admin()
+        exam = self.make_basic_exam()
+        exam["question_sources"].append(
+            {
+                "exercise_id": uuid.uuid4().hex,
+                "title": "Title",
+                "counter_in_exercise": 1,
+            }
+        )
+        response = self.post_new_exam(exam)
+        self.assertEqual(response.status_code, 201)
+
     def test_exam_with_valid_question_sources_succeeds(self):
         self.login_as_admin()
         exam = self.make_basic_exam()
         exam["question_sources"].append(
             {
-                "exercise_id": "e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
-                "question_id": "q1",
+                "exercise_id": uuid.uuid4().hex,
+                "question_id": uuid.uuid4().hex,
                 "title": "Title",
                 "counter_in_exercise": 1,
             }

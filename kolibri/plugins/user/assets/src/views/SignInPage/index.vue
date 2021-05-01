@@ -66,7 +66,7 @@
               :invalidText="usernameIsInvalidText"
               @blur="handleUsernameBlur"
               @input="handleUsernameInput"
-              @keydown="handleKeyboardNav"
+              @keydown="handleUsernameKeydown"
             />
           </transition>
           <transition name="list">
@@ -103,7 +103,7 @@
             type="error"
             :dismissible="false"
           >
-            {{ $tr('signInError') }}
+            {{ $tr('incorrectPasswordError') }}
           </UiAlert>
           <transition name="textbox">
             <KTextbox
@@ -148,56 +148,6 @@
         @userSelected="setSelectedUsername"
       />
     </div>
-
-    <!-- TODO: This can be its own separate component -->
-    <!--
-        Learner was created without a password, but now must create one.
-        This ought to be routed separately.
-      -->
-    <div v-else style="text-align: left">
-      <KButton
-        appearance="basic-link"
-        text=""
-        style="margin-bottom: 16px;"
-        @click="clearUser"
-      >
-        <template #icon>
-          <KIcon
-            icon="back"
-            :style="{
-              fill: $themeTokens.primary,
-              height: '1.125em',
-              width: '1.125em',
-              position: 'relative',
-              marginRight: '8px',
-              top: '2px',
-            }"
-          />{{ coreString('goBackAction') }}
-        </template>
-      </KButton>
-
-      <p>{{ $tr("needToMakeNewPasswordLabel", { user: username }) }}</p>
-
-      <PasswordTextbox
-        ref="createPassword"
-        :autofocus="true"
-        :disabled="busy"
-        :value.sync="createdPassword"
-        :isValid.sync="createdPasswordIsValid"
-        :shouldValidate="busy"
-        @submitNewPassword="updatePasswordAndSignIn"
-      />
-      <KButton
-        appearance="raised-button"
-        :primary="true"
-        :text="coreString('continueAction')"
-        style="width: 100%; margin: 24px auto 0; display:block;"
-        :disabled="busy"
-        @click="updatePasswordAndSignIn"
-      />
-    </div>
-    <!-- End TODO about making this its own component -->
-
   </AuthBase>
 
 </template>
@@ -210,7 +160,6 @@
   import get from 'lodash/get';
   import commonCoreStrings from 'kolibri.coreVue.mixins.commonCoreStrings';
   import { LoginErrors } from 'kolibri.coreVue.vuex.constants';
-  import PasswordTextbox from 'kolibri.coreVue.components.PasswordTextbox';
   import { validateUsername } from 'kolibri.utils.validators';
   import UiAutocompleteSuggestion from 'kolibri-design-system/lib/keen/UiAutocompleteSuggestion';
   import UiAlert from 'kolibri-design-system/lib/keen/UiAlert';
@@ -220,6 +169,7 @@
   import AuthBase from '../AuthBase';
   import UsersList from '../UsersList';
   import commonUserStrings from '../commonUserStrings';
+  import { getUsernameExists } from '../../apiResource';
   import SignInHeading from './SignInHeading';
 
   const MAX_USERS_FOR_LISTING_VIEW = 16;
@@ -233,7 +183,6 @@
     },
     components: {
       AuthBase,
-      PasswordTextbox,
       SignInHeading,
       UiAutocompleteSuggestion,
       UiAlert,
@@ -252,8 +201,6 @@
         usernameBlurred: false,
         passwordBlurred: false,
         formSubmitted: false,
-        createdPassword: '',
-        createdPasswordIsValid: false,
         busy: false,
         loginError: null,
         usernameSubmittedWithoutPassword: false,
@@ -265,7 +212,11 @@
       backToFacilitySelectionRoute() {
         const facilityRoute = this.$router.getRoute(ComponentMap.FACILITY_SELECT);
         const whereToNext = this.$router.getRoute(ComponentMap.SIGN_IN);
-        return { ...facilityRoute, params: { whereToNext } };
+        let query = {};
+        if (this.nextParam) {
+          query = { next: this.nextParam };
+        }
+        return { ...facilityRoute, params: { whereToNext }, query };
       },
       showPasswordForm() {
         return (
@@ -285,6 +236,9 @@
       needsToCreatePassword() {
         return this.loginError === LoginErrors.PASSWORD_NOT_SPECIFIED;
       },
+      userDoesNotExist() {
+        return this.loginError === LoginErrors.USER_NOT_FOUND;
+      },
       simpleSignIn() {
         return this.selectedFacility.dataset.learner_can_login_with_no_password;
       },
@@ -303,6 +257,8 @@
             return this.coreString('requiredFieldError');
           } else if (!validateUsername(this.username)) {
             return this.coreString('usernameNotAlphaNumError');
+          } else if (this.userDoesNotExist) {
+            return this.$tr('incorrectUsernameError');
           }
         }
         return '';
@@ -375,13 +331,12 @@
       }
     },
     methods: {
-      ...mapActions(['kolibriLogin', 'kolibriSetUnspecifiedPassword']),
+      ...mapActions(['kolibriLogin']),
       clearUser() {
         // Going back to the beginning - undo what we may have
         // changed so far and clearing the errors, if any
         this.username = '';
         this.password = '';
-        this.createdPassword = '';
         // This ensures we don't get '<field> required' when going back
         // and forth
         this.usernameBlurred = false;
@@ -395,23 +350,6 @@
         // and to check if we even need a password
         // or need to change a password
         this.signIn();
-      },
-      updatePasswordAndSignIn() {
-        if (this.createdPasswordIsValid) {
-          this.busy = true;
-          this.kolibriSetUnspecifiedPassword({
-            username: this.username,
-            password: this.createdPassword,
-            facility: this.selectedFacility.id,
-          }).then(() => {
-            // Password successfully set
-            // Use this password now to sign in
-            this.password = this.createdPassword;
-            this.signIn();
-          });
-        } else {
-          this.$refs.createPassword.focus();
-        }
       },
       setSuggestionTerm(newVal) {
         if (newVal !== null && typeof newVal !== 'undefined') {
@@ -448,7 +386,7 @@
             this.usernameSuggestions = [];
           });
       },
-      handleKeyboardNav(e) {
+      handleUsernameKeydown(e) {
         switch (e.code) {
           case 'ArrowDown':
             if (this.showDropdown && this.suggestions.length) {
@@ -468,12 +406,13 @@
             break;
           case 'NumpadEnter':
           case 'Enter':
+            // Prevent form from emitting submit event
+            e.preventDefault();
             if (this.highlightedIndex < 0) {
               this.showDropdown = false;
               this.signIn();
             } else {
               this.fillUsername(this.suggestions[this.highlightedIndex]);
-              e.preventDefault();
             }
             break;
           default:
@@ -491,6 +430,9 @@
         }
       },
       handleUsernameInput() {
+        if (this.loginError) {
+          this.loginError = '';
+        }
         this.showDropdown = true;
         this.usernameBlurred = true;
       },
@@ -509,8 +451,22 @@
           return;
         }
 
+        // Check if user is in the facility
+        return getUsernameExists({
+          username: this.username,
+          facilityId: this.selectedFacility.id,
+        }).then(usernameExists => {
+          if (usernameExists) {
+            this.createSession();
+          } else {
+            // If username is not found, focus and select the field so user can try again
+            this.loginError = LoginErrors.USER_NOT_FOUND;
+            this.$refs.username.$refs.textbox.$refs.input.select();
+          }
+        });
+      },
+      createSession() {
         this.busy = true;
-
         const sessionPayload = {
           username: this.username,
           password: this.password,
@@ -526,6 +482,10 @@
             // If we don't have a password, we submitted without a username
             if (err) {
               if (err === LoginErrors.PASSWORD_NOT_SPECIFIED) {
+                this.$router.push({
+                  name: ComponentMap.NEW_PASSWORD,
+                  query: sessionPayload,
+                });
                 // This error overrides the whole layout
                 this.loginError = err;
               } else {
@@ -533,6 +493,10 @@
                 this.usernameSubmittedWithoutPassword = !this.password;
                 this.loginError = this.usernameSubmittedWithoutPassword ? null : err;
               }
+            }
+
+            if (this.invalidCredentials || this.usernameSubmittedWithoutPassword) {
+              this.$refs.password.$refs.textbox.$refs.input.select();
             }
             this.busy = false;
           })
@@ -547,10 +511,16 @@
       },
     },
     $trs: {
-      signInError: 'Incorrect username or password',
+      incorrectPasswordError: {
+        message: 'Incorrect password',
+        context: 'Error that is shown if the user provides the wrong password',
+      },
+      incorrectUsernameError: {
+        message: 'Incorrect username',
+        context: 'Error that is shown when a user provides a username that is not in the facility',
+      },
       requiredForCoachesAdmins: 'Password is required for coaches and admins',
       documentTitle: 'User Sign In',
-      needToMakeNewPasswordLabel: 'Hi, {user}. You need to set a new password for your account.',
       nextLabel: 'Next',
       changeUser: 'Change user',
       changeFacility: 'Change facility',

@@ -65,6 +65,7 @@ def log_permissions(user_field):
             can_be_read_by=(role_kinds.ADMIN, role_kinds.COACH),
             can_be_updated_by=(role_kinds.ADMIN,),
             can_be_deleted_by=(role_kinds.ADMIN,),
+            collection_field="{}__memberships__collection_id".format(user_field),
         )
     )
 
@@ -176,7 +177,7 @@ class UserSessionLog(BaseLogModel):
     start_timestamp = DateTimeTzField(default=local_now)
     last_interaction_timestamp = DateTimeTzField(null=True, blank=True)
     pages = models.TextField(blank=True)
-    device_info = models.CharField(blank=True, max_length=100)
+    device_info = models.CharField(null=True, blank=True, max_length=100)
 
     @classmethod
     def update_log(cls, user, user_agent):

@@ -10,17 +10,12 @@ from cheroot import wsgi
 from cherrypy.process.plugins import SimplePlugin
 from cherrypy.process.servers import ServerAdapter
 from django.conf import settings
-from whitenoise import WhiteNoise
 from zeroconf import get_all_addresses
 
 import kolibri
 from .system import kill_pid
 from .system import pid_exists
-from kolibri.core.content.utils import paths
-from kolibri.core.content.zip_wsgi import get_application
-from kolibri.core.deviceadmin.utils import schedule_vacuum
 from kolibri.core.tasks.main import initialize_workers
-from kolibri.core.tasks.main import queue
 from kolibri.core.tasks.main import scheduler
 from kolibri.utils import conf
 from kolibri.utils.android import on_android
@@ -68,6 +63,10 @@ DAEMON_LOG = os.path.join(conf.LOG_ROOT, "daemon.txt")
 # Currently non-configurable until we know how to properly handle this
 LISTEN_ADDRESS = "0.0.0.0"
 
+# Constant job_id for scheduled jobs that we want to keep track of across server restarts
+SCH_PING_JOB_ID = "0"
+SCH_VACUUM_JOB_ID = "1"
+
 
 class NotRunning(Exception):
     """
@@ -87,26 +86,22 @@ class ServicesPlugin(SimplePlugin):
         self.workers = None
 
     def start(self):
-        # Initialize the iceqube scheduler to handle scheduled tasks
-        scheduler.clear_scheduler()
-
-        if not conf.OPTIONS["Deployment"]["DISABLE_PING"]:
-
-            # schedule the pingback job
+        # schedule the pingback job if not already scheduled
+        if SCH_PING_JOB_ID not in scheduler:
             from kolibri.core.analytics.utils import schedule_ping
 
-            schedule_ping()
+            schedule_ping(job_id=SCH_PING_JOB_ID)
 
-        # schedule the vacuum job
-        schedule_vacuum()
+        # schedule the vacuum job if not already scheduled
+        if SCH_VACUUM_JOB_ID not in scheduler:
+            from kolibri.core.deviceadmin.utils import schedule_vacuum
 
-        # This is run every time the server is started to clear all the tasks
-        # in the queue
-        queue.empty()
+            schedule_vacuum(job_id=SCH_VACUUM_JOB_ID)
 
         # Initialize the iceqube engine to handle queued tasks
         self.workers = initialize_workers()
 
+        # Initialize the iceqube scheduler to handle scheduled tasks
         scheduler.start_scheduler()
 
         # Register the Kolibri zeroconf service so it will be discoverable on the network
@@ -213,94 +208,12 @@ def calculate_cache_size():
     return MIN_CACHE
 
 
-class MultiStaticDispatcher(cherrypy._cpdispatch.Dispatcher):
-    """
-    A special cherrypy Dispatcher extension to dispatch static content from a series
-    of directories on a search path. The first directory in which a file is found for
-    the path is used, and if it's not found in any of them, then the handler for the
-    first one is used, which will then likely return a NotFound error.
-    """
-
-    def __init__(self, search_paths, *args, **kwargs):
-
-        assert len(search_paths) >= 1, "Must provide at least one path in search_paths"
-
-        self.static_handlers = []
-
-        # build a cherrypy static file handler for each of the directories in search path
-        for search_path in search_paths:
-
-            search_path = os.path.normpath(os.path.expanduser(search_path))
-
-            content_files_handler = cherrypy.tools.staticdir.handler(
-                section="/", dir=search_path
-            )
-
-            content_files_handler.search_path = search_path
-
-            self.static_handlers.append(content_files_handler)
-
-        super(MultiStaticDispatcher, self).__init__(*args, **kwargs)
-
-    def find_handler(self, path):
-
-        super(MultiStaticDispatcher, self).find_handler(path)
-
-        if len(self.static_handlers) == 1:
-            return (self.static_handlers[0], [])
-
-        # loop over all the static handlers to see if they have the file we want
-        for handler in self.static_handlers:
-
-            filepath = os.path.join(handler.search_path, path.strip("/"))
-
-            # ensure the user-provided path doesn't try to jump up levels
-            if not os.path.normpath(filepath).startswith(handler.search_path):
-                continue
-
-            if os.path.exists(filepath):
-                return (handler, [])
-
-        return (self.static_handlers[0], [])
-
-
 def configure_http_server(port):
     # Mount the application
     from kolibri.deployment.default.wsgi import application
-
-    if not getattr(settings, "DEVELOPER_MODE", False):
-        # Mount static files
-        application = WhiteNoise(
-            application,
-            root=settings.STATIC_ROOT,
-            prefix=settings.STATIC_URL,
-            # Use 1 day as the default cache time for static assets
-            max_age=24 * 60 * 60,
-            # Add a test for any file name that contains a semantic version number
-            # or a 32 digit number (assumed to be a file hash)
-            # these files will be cached indefinitely
-            immutable_file_test=r"((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)|[a-f0-9]{32})",
-        )
+    from kolibri.deployment.default.alt_wsgi import alt_application
 
     cherrypy.tree.graft(application, "/")
-
-    # Mount media files
-    cherrypy.tree.mount(
-        cherrypy.tools.staticdir.handler(section="/", dir=settings.MEDIA_ROOT),
-        settings.MEDIA_URL,
-    )
-
-    # Mount content files
-    CONTENT_ROOT = "/" + paths.get_content_url(
-        conf.OPTIONS["Deployment"]["URL_PATH_PREFIX"]
-    ).lstrip("/")
-    content_dirs = [paths.get_content_dir_path()] + paths.get_content_fallback_paths()
-    dispatcher = MultiStaticDispatcher(content_dirs)
-    cherrypy.tree.mount(
-        None,
-        CONTENT_ROOT,
-        config={"/": {"tools.caching.on": False, "request.dispatch": dispatcher}},
-    )
 
     cherrypy_server_config = {
         "server.socket_host": LISTEN_ADDRESS,
@@ -325,7 +238,7 @@ def configure_http_server(port):
         cherrypy.engine,
         wsgi.Server(
             alt_port_addr,
-            get_application(),
+            alt_application,
             numthreads=conf.OPTIONS["Server"]["CHERRYPY_THREAD_POOL"],
             request_queue_size=conf.OPTIONS["Server"]["CHERRYPY_QUEUE_SIZE"],
             timeout=conf.OPTIONS["Server"]["CHERRYPY_SOCKET_TIMEOUT"],
